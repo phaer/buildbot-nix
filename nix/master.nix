@@ -15,7 +15,51 @@ in
         default = "postgresql://@/buildbot";
         description = "Postgresql database url";
       };
+      gitea = {
+        enable = lib.mkEnableOption "gitea";
+        rootUri = lib.mkOption {
+          type = lib.types.str;
+          description = "Gitea instance URI";
+        };
+
+        tokenFile = lib.mkOption {
+          type = lib.types.path;
+          description = "Github token file";
+        };
+        webhookSecretFile = lib.mkOption {
+          type = lib.types.path;
+          description = "Github webhook secret file";
+        };
+        oauthSecretFile = lib.mkOption {
+          type = lib.types.path;
+          description = "Github oauth secret file";
+        };
+       oauthId = lib.mkOption {
+          type = lib.types.str;
+          description = "Github oauth id. Used for the login button";
+        };
+        # Most likely you want to use the same user as for the buildbot
+        user = lib.mkOption {
+          type = lib.types.str;
+          description = "Github user that is used for the buildbot";
+        };
+        admins = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Users that are allowed to login to buildbot, trigger builds and change settings";
+        };
+        topic = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = "build-with-buildbot";
+          description = ''
+            Projects that have this topic will be built by buildbot.
+            If null, all projects that the buildbot github user has access to, are built.
+          '';
+        };
+      };
+
       github = {
+        enable = lib.mkEnableOption "gitea";
         tokenFile = lib.mkOption {
           type = lib.types.path;
           description = "Github token file";
@@ -89,7 +133,7 @@ in
         import sys
         sys.path.append("${../buildbot_nix}")
         from datetime import timedelta
-        from buildbot_nix import GithubConfig, NixConfigurator
+        from buildbot_nix import ${lib.optionalString cfg.github.enable "GithubConfig, "} ${lib.optionalString cfg.gitea.enable "GiteaConfig, "}NixConfigurator
       '';
       extraConfig = ''
         c["www"]["plugins"] = c["www"].get("plugins", {})
@@ -103,15 +147,26 @@ in
         ''
         ''
           NixConfigurator(
-              github=GithubConfig(
-                  oauth_id=${builtins.toJSON cfg.github.oauthId},
-                  admins=${builtins.toJSON cfg.github.admins},
-                  buildbot_user=${builtins.toJSON cfg.github.user},
-                  topic=${builtins.toJSON cfg.github.topic},
-              ),
-              url=${builtins.toJSON config.services.buildbot-master.buildbotUrl},
-              nix_eval_max_memory_size=${builtins.toJSON cfg.evalMaxMemorySize},
-              nix_supported_systems=${builtins.toJSON cfg.buildSystems},
+            ${lib.optionalString cfg.github.enable ''
+            github=GithubConfig(
+              oauth_id=${builtins.toJSON cfg.github.oauthId},
+              admins=${builtins.toJSON cfg.github.admins},
+              buildbot_user=${builtins.toJSON cfg.github.user},
+              topic=${builtins.toJSON cfg.github.topic},
+            ),
+            ''}
+            ${lib.optionalString cfg.gitea.enable ''
+            gitea=GiteaConfig(
+              root_uri=${builtins.toJSON cfg.gitea.rootUri},
+              oauth_id=${builtins.toJSON cfg.gitea.oauthId},
+              admins=${builtins.toJSON cfg.gitea.admins},
+              buildbot_user=${builtins.toJSON cfg.gitea.user},
+              topic=${builtins.toJSON cfg.gitea.topic},
+            ),
+            ''}
+            url=${builtins.toJSON config.services.buildbot-master.buildbotUrl},
+            nix_eval_max_memory_size=${builtins.toJSON cfg.evalMaxMemorySize},
+            nix_supported_systems=${builtins.toJSON cfg.buildSystems},
           )
         ''
       ];
@@ -135,10 +190,15 @@ in
     systemd.services.buildbot-master = {
       serviceConfig = {
         # in master.py we read secrets from $CREDENTIALS_DIRECTORY
-        LoadCredential = [
+        LoadCredential = lib.optionals cfg.github.enable [
           "github-token:${cfg.github.tokenFile}"
           "github-webhook-secret:${cfg.github.webhookSecretFile}"
           "github-oauth-secret:${cfg.github.oauthSecretFile}"
+          "buildbot-nix-workers:${cfg.workersFile}"
+        ] ++ lib.optionals cfg.gitea.enable [
+          "gitea-token:${cfg.gitea.tokenFile}"
+          "gitea-webhook-secret:${cfg.gitea.webhookSecretFile}"
+          "gitea-oauth-secret:${cfg.gitea.oauthSecretFile}"
           "buildbot-nix-workers:${cfg.workersFile}"
         ];
       };
