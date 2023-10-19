@@ -131,7 +131,7 @@ in
       enable = true;
       extraImports = ''
         import sys
-        sys.path.append("${../buildbot_nix}")
+        sys.path.append("${../.}")
         from datetime import timedelta
         from buildbot_nix import ${lib.optionalString cfg.github.enable "GithubConfig, "} ${lib.optionalString cfg.gitea.enable "GiteaConfig, "}NixConfigurator
       '';
@@ -146,7 +146,7 @@ in
           util.JanitorConfigurator(logHorizon=timedelta(weeks=4), hour=12, dayOfWeek=6)
         ''
         ''
-          NixConfigurator(
+          buildbot_nix.NixConfigurator(
             ${lib.optionalString cfg.github.enable ''
             github=GithubConfig(
               oauth_id=${builtins.toJSON cfg.github.oauthId},

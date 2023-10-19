@@ -3,7 +3,6 @@
 import json
 import multiprocessing
 import os
-import random
 import signal
 import sys
 import uuid
@@ -11,7 +10,7 @@ from collections import defaultdict
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from buildbot.configurators import ConfiguratorBase
 from buildbot.plugins import reporters, schedulers, secrets, steps, util, worker
@@ -23,9 +22,9 @@ from buildbot.process.results import ALL_RESULTS, statusToString
 from buildbot.steps.trigger import Trigger
 from github_projects import (  # noqa: E402
     GithubProject,
-    create_project_hook,
-    load_projects,
-    refresh_projects,
+#    create_project_hook,
+#    load_projects,
+#    refresh_projects,
 )
 from twisted.internet import defer, threads
 from twisted.python.failure import Failure
@@ -551,18 +550,34 @@ def read_secret_file(secret_name: str) -> str:
 
 
 @dataclass
-class GithubConfig:
+class ForgeConfig:
     oauth_id: str
     admins: list[str]
     buildbot_user: str
+    oauth_secret_name: str
+    webhook_secret_name: str
+    token_secret_name: str
+    project_cache_file: Path
+    topic: str | None = "build-with-buildbot"
+
+    def token(self) -> str:
+        return read_secret_file(self.token_secret_name)
+
+
+class GithubConfig(ForgeConfig):
     oauth_secret_name: str = "github-oauth-secret"
     webhook_secret_name: str = "github-webhook-secret"
     token_secret_name: str = "github-token"
     project_cache_file: Path = Path("github-project-cache.json")
     topic: str | None = "build-with-buildbot"
 
-    def token(self) -> str:
-        return read_secret_file(self.token_secret_name)
+
+class GiteaConfig(ForgeConfig):
+    root_uri: str
+    oauth_secret_name: str = "gigtea-oauth-secret"
+    webhook_secret_name: str = "gigtea-webhook-secret"
+    token_secret_name: str = "gigtea-token"
+    project_cache_file: Path = Path("gitea-project-cache.json")
 
 
 def config_for_project(
@@ -570,14 +585,14 @@ def config_for_project(
     project: GithubProject,
     credentials: str,
     worker_names: list[str],
-    github: GithubConfig,
+    forge: ForgeConfig,
     nix_supported_systems: list[str],
     nix_eval_max_memory_size: int,
 ) -> Project:
     ## get a deterministic jitter for the project
-    #random.seed(project.name)
+    # random.seed(project.name)
     ## don't run all projects at the same time
-    #jitter = random.randint(1, 60) * 60
+    # jitter = random.randint(1, 60) * 60
 
     config["projects"].append(Project(project.name))
     config["schedulers"].extend(
@@ -624,11 +639,11 @@ def config_for_project(
                 buttonName="Update flakes",
             ),
             # updates flakes once a week
-            #schedulers.Periodic(
+            # schedulers.Periodic(
             #    name=f"{project.id}-update-flake-weekly",
             #    builderNames=[f"{project.name}/update-flake"],
             #    periodicBuildTimer=24 * 60 * 60 * 7 + jitter,
-            #),
+            # ),
         ]
     )
     has_cachix_auth_token = os.path.isfile(
@@ -665,25 +680,34 @@ def config_for_project(
 
 
 class NixConfigurator(ConfiguratorBase):
-    """Janitor is a configurator which create a Janitor Builder with all needed Janitor steps"""
-
     def __init__(
         self,
-        # Shape of this file:
-        # [ { "name": "<worker-name>", "pass": "<worker-password>", "cores": "<cpu-cores>" } ]
         github: GithubConfig,
+        gitea: GiteaConfig
         url: str,
         nix_supported_systems: list[str],
         nix_eval_max_memory_size: int = 4096,
+        # Shape of this file:
+        # [ { "name": "<worker-name>", "pass": "<worker-password>", "cores": "<cpu-cores>" } ]
         nix_workers_secret_name: str = "buildbot-nix-workers",
     ) -> None:
         super().__init__()
         self.nix_workers_secret_name = nix_workers_secret_name
         self.nix_eval_max_memory_size = nix_eval_max_memory_size
         self.nix_supported_systems = nix_supported_systems
-        self.github = github
+
+        if github and gitea:
+            raise Exception("We only support a single forge per buildbot instance at the moment")
+        elif github:
+            self.forge = github
+        elif:
+            self.forge = gitea
+        else:
+            raise Exception("No forge enabled")
+
         self.url = url
         self.systemd_credentials_dir = os.environ["CREDENTIALS_DIRECTORY"]
+
 
     def configure(self, config: dict[str, Any]) -> None:
         projects = load_projects(self.github.token(), self.github.project_cache_file)
@@ -699,89 +723,90 @@ class NixConfigurator(ConfiguratorBase):
                 config["workers"].append(worker.Worker(worker_name, item["pass"]))
                 worker_names.append(worker_name)
 
+
         config["projects"] = config.get("projects", [])
 
         webhook_secret = read_secret_file(self.github.webhook_secret_name)
 
-        for project in projects:
-            create_project_hook(
-                project.owner,
-                project.repo,
-                self.github.token(),
-                f"{self.url}/change_hook/github",
-                webhook_secret,
-            )
+        #for project in projects:
+        #    create_project_hook(
+        #        project.owner,
+        #        project.repo,
+        #        self.github.token(),
+        #        f"{self.url}/change_hook/github",
+        #        webhook_secret,
+        #    )
 
-        for project in projects:
-            config_for_project(
-                config,
-                project,
-                self.systemd_credentials_dir,
-                worker_names,
-                self.github,
-                self.nix_supported_systems,
-                self.nix_eval_max_memory_size,
-            )
+        #for project in projects:
+        #    config_for_project(
+        #        config,
+        #        project,
+        #        self.systemd_credentials_dir,
+        #        worker_names,
+        #        self.github,
+        #        self.nix_supported_systems,
+        #        self.nix_eval_max_memory_size,
+        #    )
 
-        # Reload github projects
-        config["builders"].append(
-            reload_github_projects(
-                [worker_names[0]],
-                self.github.token(),
-                self.github.project_cache_file,
-            )
-        )
-        config["schedulers"].extend(
-            [
-                schedulers.ForceScheduler(
-                    name="reload-github-projects",
-                    builderNames=["reload-github-projects"],
-                    buttonName="Update projects",
-                ),
-                # project list twice a day
-                schedulers.Periodic(
-                    name="reload-github-projects-bidaily",
-                    builderNames=["reload-github-projects"],
-                    periodicBuildTimer=12 * 60 * 60,
-                ),
-            ]
-        )
-        config["services"] = config.get("services", [])
-        config["services"].append(
-            reporters.GitHubStatusPush(
-                token=self.github.token(),
-                # Since we dynamically create build steps,
-                # we use `virtual_builder_name` in the webinterface
-                # so that we distinguish what has beeing build
-                context=Interpolate("buildbot/%(prop:status_name)s"),
-            )
-        )
-        systemd_secrets = secrets.SecretInAFile(
-            dirname=os.environ["CREDENTIALS_DIRECTORY"]
-        )
-        config["secretsProviders"] = config.get("secretsProviders", [])
-        config["secretsProviders"].append(systemd_secrets)
-        config["www"] = config.get("www", {})
-        config["www"]["avatar_methods"] = config["www"].get("avatar_methods", [])
-        config["www"]["avatar_methods"].append(util.AvatarGitHub())
-        config["www"]["auth"] = util.GitHubAuth(
-            self.github.oauth_id, read_secret_file(self.github.oauth_secret_name)
-        )
-        config["www"]["authz"] = util.Authz(
-            roleMatchers=[
-                util.RolesFromUsername(roles=["admin"], usernames=self.github.admins)
-            ],
-            allowRules=[
-                util.AnyEndpointMatcher(role="admin", defaultDeny=False),
-                util.AnyControlEndpointMatcher(role="admins"),
-            ],
-        )
-        config["www"]["change_hook_dialects"] = config["www"].get(
-            "change_hook_dialects", {}
-        )
-        config["www"]["change_hook_dialects"]["github"] = {
-            "secret": webhook_secret,
-            "strict": True,
-            "token": self.github.token(),
-            "github_property_whitelist": "*",
-        }
+        ## Reload github projects
+        #config["builders"].append(
+        #    reload_github_projects(
+        #        [worker_names[0]],
+        #        self.github.token(),
+        #        self.github.project_cache_file,
+        #    )
+        #)
+        #config["schedulers"].extend(
+        #    [
+        #        schedulers.ForceScheduler(
+        #            name="reload-github-projects",
+        #            builderNames=["reload-github-projects"],
+        #            buttonName="Update projects",
+        #        ),
+        #        # project list twice a day
+        #        schedulers.Periodic(
+        #            name="reload-github-projects-bidaily",
+        #            builderNames=["reload-github-projects"],
+        #            periodicBuildTimer=12 * 60 * 60,
+        #        ),
+        #    ]
+        #)
+        #config["services"] = config.get("services", [])
+        #config["services"].append(
+        #    reporters.GitHubStatusPush(
+        #        token=self.github.token(),
+        #        # Since we dynamically create build steps,
+        #        # we use `virtual_builder_name` in the webinterface
+        #        # so that we distinguish what has beeing build
+        #        context=Interpolate("buildbot/%(prop:status_name)s"),
+        #    )
+        #)
+        #systemd_secrets = secrets.SecretInAFile(
+        #    dirname=os.environ["CREDENTIALS_DIRECTORY"]
+        #)
+        #config["secretsProviders"] = config.get("secretsProviders", [])
+        #config["secretsProviders"].append(systemd_secrets)
+        #config["www"] = config.get("www", {})
+        #config["www"]["avatar_methods"] = config["www"].get("avatar_methods", [])
+        #config["www"]["avatar_methods"].append(util.AvatarGitHub())
+        #config["www"]["auth"] = util.GitHubAuth(
+        #    self.github.oauth_id, read_secret_file(self.github.oauth_secret_name)
+        #)
+        #config["www"]["authz"] = util.Authz(
+        #    roleMatchers=[
+        #        util.RolesFromUsername(roles=["admin"], usernames=self.github.admins)
+        #    ],
+        #    allowRules=[
+        #        util.AnyEndpointMatcher(role="admin", defaultDeny=False),
+        #        util.AnyControlEndpointMatcher(role="admins"),
+        #    ],
+        #)
+        #config["www"]["change_hook_dialects"] = config["www"].get(
+        #    "change_hook_dialects", {}
+        #)
+        #config["www"]["change_hook_dialects"]["github"] = {
+        #    "secret": webhook_secret,
+        #    "strict": True,
+        #    "token": self.github.token(),
+        #    "github_property_whitelist": "*",
+        #}
