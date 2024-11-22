@@ -833,7 +833,7 @@ in
           cat > $CONFIGURATION_DIRECTORY/oauth2-proxy.toml <<EOF
           client_secret = "$(cat ${cfg.accessMode.fullyPrivate.clientSecretFile})"
           cookie_secret = "$(cat ${cfg.accessMode.fullyPrivate.cookieSecretFile})"
-          basic_auth_password = "$(cat ${cfg.httpBasicAuthPasswordFile})"
+          basic_auth_password = "$(cat ${builtins.toString cfg.httpBasicAuthPasswordFile})"
           # https://github.com/oauth2-proxy/oauth2-proxy/issues/1724
           scope = "read:user user:email repo"
           EOF
