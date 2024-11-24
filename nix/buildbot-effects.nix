@@ -17,4 +17,5 @@ buildPythonApplication {
   postFixup = ''
     rm -rf $out/${python3.pkgs.python.sitePackages}/buildbot_nix
   '';
+  meta.mainProgram = "buildbot-effects";
 }

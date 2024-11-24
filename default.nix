@@ -4,4 +4,5 @@ buildPythonPackage {
   format = "pyproject";
   src = ./.;
   nativeBuildInputs = [ setuptools ];
+  meta.mainProgram = "buildbot-nix";
 }
