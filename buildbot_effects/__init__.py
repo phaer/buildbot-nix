@@ -63,19 +63,28 @@ def git_get_tag(path: Path, rev: str) -> str | None:
         return tags.splitlines()[1]
     return None
 
+def git_get_ref(path: Path, rev: str) -> str | None:
+    refs = git_command(["show-ref"], path)
+    lines = [ l.split(" ") for l in refs.splitlines() ]
+    try:
+        return [ref for commit, ref in lines if commit == rev][0]
+    except IndexError:
+        return None
+
+
 
 def effects_args(opts: EffectsOptions) -> dict[str, Any]:
     rev = opts.rev or get_git_rev(opts.path)
     short_rev = rev[:7]
     branch = opts.branch or get_git_branch(opts.path)
     repo = opts.repo or opts.path.name
+    ref = git_get_ref(opts.path, rev)
     tag = opts.tag or git_get_tag(opts.path, rev)
     url = opts.url or get_git_remote_url(opts.path)
     primary_repo = dict(
         name=repo,
         branch=branch,
-        # TODO: support ref
-        ref=None,
+        ref=ref,
         tag=tag,
         rev=rev,
         shortRev=short_rev,
